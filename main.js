@@ -1,5 +1,5 @@
 const net = require('net');
-var FastScanner = require('fastscan');
+// var FastScanner = require('fastscan');
 const { time } = require('console');
 
 
@@ -11,7 +11,7 @@ var clients = {};
 var clientCount = 0;
 // 关键词
 const filterWords = ['操你妈', '傻逼'];
-var scanner = new FastScanner(filterWords);
+// var scanner = new FastScanner(filterWords);
 
 // 聊天字数限制
 var chatLimit = 20;
@@ -19,57 +19,80 @@ var chatLimit = 20;
 // 创建服务器
 const server = new net.createServer();
 
-function parseMsg(msg) {
-    //删除分隔符
-    msg = ('' + msg).replace('\0', '');
-    let split = ('' + msg).split('$', 2);
-    console.log(split);
-    //格式化数据
-    return {
-        type: split[0],
-        msg: split[1]
-    };
-}
-
 function broadcast(command, data, id) {
     // console.log(clients);
     for (cli in clients) {
-        clients[cli].send(command, data, id);
+        clients[cli].send({
+            Cmd: command,
+            Args: data,
+            Id: id
+        });
     }
 }
 
-// 求个优化(
-function sendPlayerList(cliToSend) {
-    for (cliToFetch in clients) {
-        // 遍历得到的是key, 需要转成socket对象
-        cliToFetch = clients[cliToFetch];
-        if (cliToSend == cliToFetch) continue;
-        cliToSend.send('sleeper', cliToFetch.id, cliToFetch.id);
-        // 后面的如果要节约带宽可以注释，目前测试发送姓名没什么用（
-        cliToSend.send('name', `[${cliToFetch.id}]` + cliToFetch.name, cliToFetch.id);
-        cliToSend.send('type', cliToFetch.type, cliToFetch.id);
+function broadcast(object) {
+    for (cli in clients) {
+        clients[cli].send(object);
     }
-    // 添加一个bot作为server
-    cliToSend.send('sleeper', 0, 0);
-    cliToSend.send('name', 'SERVER', 0);
-    cliToSend.send('type', 1, 0);
+}
+
+function sendSleeperData(client) {
+    for (sid in clients) {
+        if (sid == client.id) continue;
+        client.send({
+            Cmd: 'sleeper',
+            Args: [sid],
+            Id: sid
+        });
+
+        client.send({
+            Cmd: 'name',
+            Args: [clients[sid].name],
+            Id: sid
+        })
+
+        client.send({
+            Cmd: 'type',
+            Args: [clients[sid].type],
+            Id: sid
+        })
+    }
+}
+
+function getRndInteger(min, max) {
+    return Math.floor(Math.random() * (max - min + 1) ) + min;
 }
 
 server.on('connection', (client) => {
-    client.send = (command, data, id = client.id) => {
-        client.write(`${id}\0${command}$${data}\0`)
+    client.send = (object) => {
+        client.write(JSON.stringify(object) + "\0");
     }
-    client.id = ++clientCount; // 给每一个client起个名
+    clientCount++;
+    let sid = getRndInteger(0, 30000)
+    // 防止sid重复
+    while(clients[sid] != undefined) {
+        sid = getRndInteger(0, 30000)
+    }
+    client.id = sid// 给每一个client起个名
     client.name = 'unnamed'; //默认名称
     client.type = 0; // 默认类型
     clients[client.id] = client; // 将client保存在clients
     console.log(`客户端 ${client.id} 上线了`);
-    // 发送客户端id
-    client.send('yourid', client.id);
-    // 广播客户端id
-    broadcast('sleeper', client.id, 0);
-    // 发送玩家列表
-    sendPlayerList(client);
+    //发送guid
+    client.send({
+        Cmd: 'packguid',
+        Args: ['{94D448BA-AEFA-4C87-A5F8-36F6640E2F67}']
+    });
+
+    // 发送玩家id
+    client.send({
+        Cmd: 'yourid',
+        Args: [client.id],
+        Id: client.id
+    });
+
+    // 发送当前玩家信息
+    sendSleeperData(client);
 
     //判断超时玩家
     for (cli in clients) {
@@ -77,83 +100,27 @@ server.on('connection', (client) => {
             clients[cli].end();
         }
     }
-    //client.send('pos', '0,0')
     
     client.on('data', function (msg) { //接收client发来的信息
         //console.log(msg);
-        msg = parseMsg(msg);
-        console.log(`[${client.id}][${msg.type}] ${msg.msg}`);
-        //消息处理
-        switch (msg.type) {
+        msg = JSON.parse(String(msg).replace('\0', ''));
+        console.log(msg);
+        msg.Id = client.id;
+        switch (msg.Cmd) {
             case 'name':
-                broadcast('name', `[${cliToFetch.id}]` + msg.msg, client.id);
-                // 长度判断
-                if(msg.msg.length < 4 || msg.msg.length > 15) {
-                    client.send('chat', '你的名字过长或者过短，请修改！', 0)
-                    client.end();
-                }
-                client.name = msg.msg;
-                broadcast('chat', `玩家 ${client.name} 加入了！`, 0);
-                break;
+                client.name = msg.Args[0]
             case 'type':
-                broadcast('type', msg.msg, client.id);
-                client.type = msg.msg;
-                break;
+                client.type = msg.Args[0]
             case 'chat':
-                // 聊天分析
-                // 指令不受限制
-                if (('' + msg.msg).startsWith('/')) {
-                    if (('' + msg.msg).startsWith('/version')) {
-                        client.send('chat', 'WheatSleep Server NODEJS v0.1');
-                    }
-    
-                    if (('' + msg.msg).startsWith('/list')) {
-                        client.send('chat', `当前在线:${clientCount}`);
-                    }
-    
-                    if (('' + msg.msg).startsWith('/tp ')) {
-                        let id = ('' + msg.msg).replace('/tp ', '');
-                        if (clients[id] != undefined) {
-                            broadcast('move', `${clients[id].x},${clients[id].y}`, client.id);
-                            //client.send('chat', 'WheatSleep Server NODEJS v0.1');
-                        } else {
-                            client.send('chat', '玩家不存在！')
-                        }
-                    }
-                } else {
-                    // 字数上限
-                    if (('' + msg.msg).length >= chatLimit) {
-                        client.send('chat', '超过字数限制！');
-                        break;
-                    }
-                    // 关键词检测
-                    if (scanner.search(msg.msg).length == 0) {
-                        broadcast('chat', msg.msg, client.id);
-                    } else {
-                        broadcast('chat', '我是傻宝', client.id);
-                    }
-                }
-
-                break;
-            case 'move':
-                broadcast('move', msg.msg, client.id);
-                break;
             case 'pos':
-                broadcast('pos', msg.msg, client.id);
-                let pos = ('' + msg.msg).split(',', 2);
-                let x = pos[0];
-                let y = pos[1];
-                client.x = x;
-                client.y = y;
-                client.responseTime = new Date().getTime();
-                break;
-            case 'sleep':
-                broadcast('sleep', msg.msg, client.id);
-                break;
-            case 'getup':
-                broadcast('getup', msg.msg, client.id);
+            case 'move':
+            case 'emote':
+                broadcast(msg);
                 break;
         }
+        if (msg.type = 'name') {
+            
+        } 
     });
 
     client.on('error', function (e) { //监听客户端异常
@@ -164,9 +131,7 @@ server.on('connection', (client) => {
     client.on( 'close', function () {
         delete clients[client.id];
         clientCount--;
-        console.log(`客户端${ client.id }下线了`);
-        broadcast('leave', client.id, client.id);
-        broadcast('chat', `玩家 ${client.name} 离开了！`, 0);
+        console.log(`客户端 ${ client.id } 下线了`);
     });
 
 });
